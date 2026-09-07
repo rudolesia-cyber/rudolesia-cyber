@@ -16,6 +16,3 @@
 - [Swagger Editor](https://editor.swagger.io/?url=https://raw.githubusercontent.com/rudolesia-cyber/rudolesia-cyber/main/contracts/open-api-oktus-attachments-v1.2.yaml)
 - [AsyncAPI Studio](https://studio.asyncapi.com/?url=https://raw.githubusercontent.com/rudolesia-cyber/rudolesia-cyber/main/contracts/asyncapi-oktus-attachments.yaml)
 
-Swagger умеет OpenAPI. События смотрите в AsyncAPI Studio, не в Swagger.
-
-Скачивание файла ВСК — по временной ссылке ФИР (HTTP GET, TTL 15 мин). Загрузка — JSON + base64 через шлюз и антивирус. Отказ валидации SOWA — 403.

@@ -3,32 +3,21 @@ info:
   title: ОКТУС — события задач и вложений
   version: 1.2.0
   description: |
-    Конверт и топики — **как на ИФТ** (логи 2026-09-07 / 2026-09-08).
-    Новые имена событий и отдельные топики под файлы не вводим:
-    сопровождение уже читает `header` + `body` и `evtType`.
+    События по заявкам между ПАРУС и ОКТУС. Подрядчику события не отправляются:
+    изменения он запрашивает сам через API.
 
-    Расширение 1.2: в `body` добавляется необязательный массив `attachments`.
-    Бинарник в Kafka не едет — только ссылка на объект ФИР (claim-check).
+    Сообщение состоит из `header` и `body`. В теле версии 1.2 может быть
+    необязательный список `attachments`. В событии передаётся ссылка на файл,
+    не сам файл.
 
-    К АС ВСК события не публикуем. Внешний канал — синхронный poll.
-
-    Идемпотентность: ключ Kafka = `header.evtId`. Повтор того же `evtId`
-    не создаёт второй файл и не двигает версию задачи повторно.
-
-    Версия задачи: входящее `body.lastUpdateTime`, исходящее
-    `body.lastModifTimestamp`. Событие старше сохранённой версии отбрасываем.
-
-    Гарантия at-least-once: ack после записи состояния; карантин
-    `oktus_integr`; сверка пропусков.
+    Повтор с тем же `header.evtId` не создаёт второй файл и не меняет
+    версию задачи повторно. Версия задачи во входящем событии —
+    `lastUpdateTime`, в исходящем — `lastModifTimestamp`. Более старое
+    событие не применяется.
 
     Топики:
     - ПАРУС → ОКТУС: `PARUS-CI00448138.COMMONTASKCHANGEDUPDATE`
-      (имя из архитектуры; в логе ИФТ топик не напечатан, тело — с ИФТ)
     - ОКТУС → ПАРУС: `OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE`
-      (имя топика без суффикса .V1; .V1 в логе — версия схемы)
-    - `PARUS.IN.EXTERNALIMPLEMENTATIONTASK` — другой контур, не канал вложений
-
-    Обработчики: integr-task-002 inbound, integr-task-003 outbound.
 
   contact:
     name: Климова Олеся
@@ -39,21 +28,20 @@ defaultContentType: application/json
 channels:
   PARUS-CI00448138.COMMONTASKCHANGEDUPDATE:
     description: |
-      ПАРУС публикует факт по заявке. На ИФТ — `evtType=TaskCreate`.
-      Потребитель логирует `event=[{header, body}]`; в топике одно событие.
+      ПАРУС сообщает об изменении заявки. Тип события — `TaskCreate`.
     subscribe:
       operationId: consumeParusTaskEvent
-      summary: ОКТУС читает факт и при attachments[].action=ADDED забирает файл GET по ссылке ФИР ПАРУС
+      summary: ОКТУС принимает событие и при необходимости забирает файл по ссылке
       message:
         $ref: '#/components/messages/ParusToOktusEvent'
 
   OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE:
     description: |
-      ОКТУС публикует факт по заявке. На ИФТ — `evtType=NotifySuccess`,
-      ключ сообщения = `header.evtId`.
+      ОКТУС сообщает об изменении заявки. Тип события — `NotifySuccess`.
+      Ключ сообщения — `header.evtId`.
     publish:
       operationId: publishOktusTaskEvent
-      summary: ПАРУС читает факт; если в body есть attachments — забирает файл GET по ссылке ФИР ОКТУС
+      summary: ПАРУС принимает событие и при необходимости забирает файл по ссылке
       message:
         $ref: '#/components/messages/OktusToParusEvent'
 
@@ -63,16 +51,15 @@ components:
       name: ParusServiceTaskEvent
       title: Событие ПАРУС → ОКТУС
       description: |
-        Конверт ИФТ: `header` + `body`.
-        `srcModule=PARUS.PTM`. На ИФТ зафиксирован `evtType=TaskCreate`.
-        Обновление заявки и файлов — тот же конверт, другой `evtType`
-        (не отдельное имя TaskChangedEvent).
+        Сообщение ПАРУС. Источник — `PARUS.PTM`.
+        Если в `body.attachments` указан новый файл, ОКТУС забирает его
+        по ссылке из хранилища ПАРУС.
       contentType: application/json
       payload:
         $ref: '#/components/schemas/ParusInboundEnvelope'
       examples:
-        - name: taskCreateIft
-          summary: ИФТ, TaskCreate, без вложений
+        - name: createTask
+          summary: Создание задачи без вложений
           payload:
             header:
               evtId: b3f127eb-f776-4ea5-8062-38e9505c63f2
@@ -105,8 +92,8 @@ components:
               placeName: OOO "DEZ LEVOBEREZHNYY"
               deviceSerialNumber: Y755000063
               deviceUid: "010837"
-        - name: taskCreateWithAttachment
-          summary: To-be 1.2 — тот же конверт, в body добавлен attachments
+        - name: createTaskWithAttachment
+          summary: Создание задачи с вложением Банка
           payload:
             header:
               evtId: 7a0e1c2d-3b4a-4c5e-9d10-112233445566
@@ -133,17 +120,15 @@ components:
       name: ParusServiceTaskEvent
       title: Событие ОКТУС → ПАРУС
       description: |
-        Конверт ИФТ: `header` + `body` (класс ParusServiceTaskEvent).
-        `srcModule=OKTUS`, на ИФТ `evtType=NotifySuccess`.
-        Файл ВСК после СПАП CLEAN уходит тем же событием:
-        в `body.attachments` ссылка на ФИР ОКТУС. Отдельный AttachmentReadyEvent
-        не вводим.
+        Сообщение ОКТУС. Источник — `OKTUS`.
+        Если в `body.attachments` указан файл подрядчика, ПАРУС забирает его
+        по ссылке из хранилища ОКТУС.
       contentType: application/json
       payload:
         $ref: '#/components/schemas/OktusOutboundEnvelope'
       examples:
-        - name: notifySuccessIft
-          summary: ИФТ, NotifySuccess, без вложений
+        - name: notifySuccess
+          summary: Уведомление об изменении задачи
           payload:
             header:
               evtId: 2168ed8b-de6d-4306-91cd-7825bd2f68f9
@@ -175,7 +160,7 @@ components:
               planFinishDate: "2026-09-11T07:26:44.359Z"
               lastModifTimestamp: "2026-09-07T21:31:05.238897Z"
         - name: notifySuccessWithAttachment
-          summary: To-be 1.2 — тот же NotifySuccess, в body добавлен attachments
+          summary: Уведомление с вложением подрядчика
           payload:
             header:
               evtId: 9f8e7d6c-5b4a-4321-8901-223344556677
@@ -205,26 +190,22 @@ components:
         evtId:
           type: string
           format: uuid
-          description: Идемпотентный ключ. На ИФТ совпадает с key сообщения Kafka.
+          description: Идентификатор события. По нему отбрасывается повтор.
         evtType:
           type: string
-          description: |
-            Тип факта. На ИФТ входящее — TaskCreate, исходящее — NotifySuccess.
-            Новый тип под файлы не заводим.
+          description: Тип события. Входящее — TaskCreate, исходящее — NotifySuccess.
         evtVersion:
           type: integer
-          description: Есть на входящем ИФТ (=1). На исходящем toString не печатает.
+          description: Версия заголовка.
         srcModule:
           type: string
-          description: PARUS.PTM на входе, OKTUS на выходе
+          description: Система-источник. Входящее — PARUS.PTM, исходящее — OKTUS.
         evtDate:
           type: integer
-          description: |
-            Время события. На входящем ИФТ — секунды (1788816657),
-            на исходящем — наносекунды (1788816665238897000).
+          description: Время события.
         sndDate:
           type: integer
-          description: Время отправки. Та же разница единиц, что у evtDate.
+          description: Время отправки.
 
     AttachmentRef:
       type: object
@@ -247,11 +228,11 @@ components:
         scanStatus:
           type: string
           enum: [CLEAN]
-          description: Только на исходящем после СПАП CLEAN
+          description: Результат проверки файла. Передаётся после успешной проверки.
         downloadUrl:
           type: string
           format: uri
-          description: Ссылка GET объекта ФИР. Не содержимое файла.
+          description: Ссылка на файл в хранилище. Содержимое файла в событии не передаётся.
         checksumSha256:
           type: string
 
@@ -287,7 +268,7 @@ components:
           nullable: true
         substatus:
           type: string
-          description: На ИФТ — CREATED. Не путать с исходящим substatusCode.
+          description: Статус заявки во входящем событии.
         resolutionCode:
           type: string
           nullable: true
@@ -301,14 +282,14 @@ components:
         lastUpdateTime:
           type: string
           format: date-time
-          description: Версия задачи на входе. Событие старше сохранённой версии отбрасываем.
+          description: Версия задачи. Более старое событие не применяется.
         tb:
           type: string
         description:
           type: string
         serviceTimeFLM:
           type: string
-          description: На ИФТ — JSON-строка графика, не массив
+          description: График доступности в виде строки JSON.
         serviceTime:
           type: string
         serviceTimeSLM:
@@ -338,7 +319,7 @@ components:
           type: string
         attachments:
           type: array
-          description: Расширение 1.2. На текущем ИФТ поля нет.
+          description: Необязательный список вложений. В событии передаётся ссылка на файл.
           items:
             $ref: '#/components/schemas/AttachmentRef'
 
@@ -366,7 +347,7 @@ components:
           type: string
         substatusCode:
           type: string
-          description: На ИФТ — ASSIGNED. Не путать с входящим substatus.
+          description: Код статуса заявки в исходящем событии.
         substatusName:
           type: string
         assigneeName:
@@ -451,9 +432,9 @@ components:
         lastModifTimestamp:
           type: string
           format: date-time
-          description: Версия задачи на выходе (аналог lastUpdateTime входа)
+          description: Версия задачи в исходящем событии.
         attachments:
           type: array
-          description: Расширение 1.2. На текущем ИФТ поля нет.
+          description: Необязательный список вложений. В событии передаётся ссылка на файл.
           items:
             $ref: '#/components/schemas/AttachmentRef'

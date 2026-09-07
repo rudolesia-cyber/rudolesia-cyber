@@ -7,7 +7,7 @@
 | Файл | Что внутри |
 |---|---|
 | [contracts/open-api-oktus-attachments-v1.2.yaml](contracts/open-api-oktus-attachments-v1.2.yaml) | OpenAPI 3.0: загрузка, временная ссылка на скачивание, удаление |
-| [contracts/asyncapi-oktus-attachments.yaml](contracts/asyncapi-oktus-attachments.yaml) | AsyncAPI 2.6: конверт ИФТ (header+body) и топики COMMONTASKCHANGEDUPDATE; вложения — необязательный attachments[] |
+| [contracts/asyncapi-oktus-attachments.yaml](contracts/asyncapi-oktus-attachments.yaml) | AsyncAPI 2.6: события ПАРУС ↔ ОКТУС, топики COMMONTASKCHANGEDUPDATE; вложения — необязательный attachments[] |
 | [open-api-oktus_2026_08_26.yaml](open-api-oktus_2026_08_26.yaml) | Базовый контракт задач v1.1 |
 
 Просмотр в браузере:

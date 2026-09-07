@@ -24,8 +24,8 @@ info:
     Топики:
     - ПАРУС → ОКТУС: `PARUS-CI00448138.COMMONTASKCHANGEDUPDATE`
       (имя из архитектуры; в логе ИФТ топик не напечатан, тело — с ИФТ)
-    - ОКТУС → ПАРУС: `OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE.V1`
-      (имя и тело — с ИФТ)
+    - ОКТУС → ПАРУС: `OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE`
+      (имя топика без суффикса .V1; .V1 в логе — версия схемы)
     - `PARUS.IN.EXTERNALIMPLEMENTATIONTASK` — другой контур, не канал вложений
 
     Обработчики: integr-task-002 inbound, integr-task-003 outbound.
@@ -47,7 +47,7 @@ channels:
       message:
         $ref: '#/components/messages/ParusToOktusEvent'
 
-  OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE.V1:
+  OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE:
     description: |
       ОКТУС публикует факт по заявке. На ИФТ — `evtType=NotifySuccess`,
       ключ сообщения = `header.evtId`.

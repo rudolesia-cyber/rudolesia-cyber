@@ -10,9 +10,15 @@ info:
     В теле версии 1.2 может быть необязательный список `attachments`.
     В событии передаётся ссылка на файл, не сам файл.
 
-    Типы событий:
-    - ПАРУС → ОКТУС: `TaskCreate`, `TaskUpdate`
-    - ОКТУС → ПАРУС: `NotifySuccess`, `NotifyError`, `Snapshot`, `TaskUpdate`
+    Типы событий ПАРУС → ОКТУС:
+    - `TaskCreate` — создание задачи
+    - `TaskUpdate` — обновление задачи
+
+    Типы событий ОКТУС → ПАРУС:
+    - `NotifySuccess` — полученное событие обработано успешно
+    - `NotifyError` — ошибка обработки, например нет обязательных полей
+    - `Snapshot` — срез по заявке
+    - `TaskUpdate` — обновление заявки со стороны ВСК
 
     Повтор с тем же `evtId` не создаёт второй файл и не меняет
     версию задачи повторно. Версия задачи во входящем событии —
@@ -32,8 +38,8 @@ defaultContentType: application/json
 channels:
   PARUS-CI00448138.COMMONTASKCHANGEDUPDATE:
     description: |
-      ПАРУС сообщает о создании или изменении заявки.
-      Типы: `TaskCreate`, `TaskUpdate`. Ключ сообщения — `header.evtId`.
+      ПАРУС сообщает о задаче. Ключ сообщения — `header.evtId`.
+      `TaskCreate` — создание задачи. `TaskUpdate` — обновление задачи.
     subscribe:
       operationId: consumeParusTaskEvent
       summary: ОКТУС принимает событие и при необходимости забирает файл по ссылке
@@ -42,9 +48,11 @@ channels:
 
   OKTUS-CI06621477.COMMONTASKCHANGEDUPDATE:
     description: |
-      ОКТУС сообщает об изменении заявки.
-      Типы: `NotifySuccess`, `NotifyError`, `Snapshot`, `TaskUpdate`.
-      Ключ сообщения — `header.evtId`.
+      ОКТУС сообщает о заявке. Ключ сообщения — `header.evtId`.
+      `NotifySuccess` — полученное событие обработано успешно.
+      `NotifyError` — ошибка обработки, например нет обязательных полей.
+      `Snapshot` — срез по заявке.
+      `TaskUpdate` — обновление заявки со стороны ВСК.
     publish:
       operationId: publishOktusTaskEvent
       summary: ПАРУС принимает событие и при необходимости забирает файл по ссылке
@@ -58,9 +66,9 @@ components:
       title: Событие ПАРУС → ОКТУС
       description: |
         Сообщение ПАРУС. Источник — `PARUS.PTM`.
-        `TaskCreate` — заявка создана. `TaskUpdate` — заявка изменена,
-        в том числе состав файлов. Если в `attachments` указан новый файл,
-        ОКТУС забирает его по ссылке из хранилища ПАРУС.
+        `TaskCreate` — создание задачи. `TaskUpdate` — обновление задачи.
+        Если в `attachments` указан новый файл, ОКТУС забирает его
+        по ссылке из хранилища ПАРУС.
       contentType: application/json
       payload:
         $ref: '#/components/schemas/ParusInboundEnvelope'
@@ -128,9 +136,10 @@ components:
       title: Событие ОКТУС → ПАРУС
       description: |
         Сообщение ОКТУС. Источник — `OKTUS`.
-        `NotifySuccess` — изменение принято. `NotifyError` — обработать
-        не удалось. `Snapshot` — полный снимок заявки. `TaskUpdate` —
-        заявка изменена, в том числе состав файлов.
+        `NotifySuccess` — полученное событие обработано успешно.
+        `NotifyError` — ошибка обработки, например нет обязательных полей.
+        `Snapshot` — срез по заявке.
+        `TaskUpdate` — обновление заявки со стороны ВСК.
         Если в `attachments` указан файл подрядчика, ПАРУС забирает его
         по ссылке из хранилища ОКТУС.
       contentType: application/json
@@ -138,7 +147,7 @@ components:
         $ref: '#/components/schemas/OktusOutboundEnvelope'
       examples:
         - name: notifySuccess
-          summary: Уведомление об изменении задачи
+          summary: Успешная обработка полученного события
           payload:
             header:
               evtId: 2168ed8b-de6d-4306-91cd-7825bd2f68f9
@@ -205,7 +214,7 @@ components:
               lastModifTimestamp: "2026-09-07T21:31:05.238897Z"
               errorData: Не удалось сохранить вложение
         - name: snapshot
-          summary: Снимок заявки
+          summary: Срез по заявке
           payload:
             header:
               evtId: 11223344-5566-7788-99aa-bbccddeeff00
@@ -218,7 +227,7 @@ components:
               substatusCode: ASSIGNED
               lastModifTimestamp: "2026-09-07T21:31:05.238897Z"
         - name: taskUpdate
-          summary: Изменение задачи со стороны ОКТУС
+          summary: Обновление заявки со стороны ВСК
           payload:
             header:
               evtId: aabbccdd-eeff-0011-2233-445566778899
@@ -244,8 +253,11 @@ components:
           type: string
           description: |
             Тип события.
-            ПАРУС → ОКТУС: TaskCreate, TaskUpdate.
-            ОКТУС → ПАРУС: NotifySuccess, NotifyError, Snapshot, TaskUpdate.
+            ПАРУС → ОКТУС: TaskCreate — создание задачи,
+            TaskUpdate — обновление задачи.
+            ОКТУС → ПАРУС: NotifySuccess — успешная обработка полученного события,
+            NotifyError — ошибка обработки, Snapshot — срез по заявке,
+            TaskUpdate — обновление заявки со стороны ВСК.
         evtVersion:
           type: integer
           description: Версия заголовка.
@@ -300,6 +312,7 @@ components:
                 evtType:
                   type: string
                   enum: [TaskCreate, TaskUpdate]
+                  description: TaskCreate — создание задачи. TaskUpdate — обновление задачи.
                   example: TaskCreate
                 srcModule:
                   const: PARUS.PTM
@@ -389,6 +402,11 @@ components:
                 evtType:
                   type: string
                   enum: [NotifySuccess, NotifyError, Snapshot, TaskUpdate]
+                  description: |
+                    NotifySuccess — полученное событие обработано успешно.
+                    NotifyError — ошибка обработки, например нет обязательных полей.
+                    Snapshot — срез по заявке.
+                    TaskUpdate — обновление заявки со стороны ВСК.
                   example: NotifySuccess
                 srcModule:
                   const: OKTUS

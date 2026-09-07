@@ -1,0 +1,443 @@
+openapi: 3.0.1
+info:
+  title: API ФП ПАРУС.ОКТУС — вложения задач
+  version: 1.2.0
+  description: |
+    Дополнение к контракту v1.1.0 (`open-api-oktus_2026_08_26.yaml`).
+    Обратная совместимость: в `Task` добавлено опциональное поле `attachments`.
+    Существующие операции задач не ломаются.
+
+    ## Что добавлено
+    - метаданные вложений в `GET /tasks` и `GET /tasks/{taskId}` (без содержимого файла)
+    - `GET /tasks/{taskId}/attachments/{attachmentId}` — временная ссылка на скачивание
+    - `POST /tasks/{taskId}/attachments` — загрузка
+    - `DELETE /tasks/{taskId}/attachments/{attachmentId}` — удаление своего файла
+
+    ## Правила
+    - Инициатор вызовов API — АС ВСК. Аутентификация — mTLS сертификата организации
+      УЦ Банка, как в v1.1.0. SynGX проверяет сертификат и выставляет
+      `X-Client-Org` / `X-Client-CN`. Права: видит и меняет только задачи своей организации.
+      401 — сертификат не принят на входе. 403 — сертификат принят, объект чужой
+      **или** SOWA отклонила валидацию запроса (внешняя атака / правило WAF);
+      во внутренний контур такой запрос не передаётся.
+    - Скачивание: API отдаёт временную ссылку GET объекта ФИР ОКТУС (S3).
+      Срок жизни ссылки — 15 минут. Повторный GET выдаёт новую ссылку.
+      Бинарник ВСК забирает HTTP GET по ссылке, не через JSON.
+    - Загрузка: файл в теле JSON, поле `contentBase64`. Декодированный файл ≤ 10 МБ.
+      HTTP-тело ≤ 14 МБ (overhead base64).
+    - Исходящие (source=PARUS): pdf, xlsx, doc, jpg, jpeg, pptx
+    - Входящие (source=VSK): jpg, jpeg, xlsx, doc, pptx, drawio
+    - Закрытие задачи без вложений разрешено. ПАРУС может вернуть задачу в работу.
+    - Удалять можно только файлы source=VSK своей организации.
+    - Загрузка и удаление запрещены в статусе CLOSED.
+    - Inbound из ПАРУС: ОКТУС проверяет файл в SDCT (`POST /api/v3/upload-file`).
+      Признак K-2 — объект не сохраняется для API ВСК, не попадает в `attachments[]`,
+      `GET .../attachments/{id}` не выдаёт ссылку (404). Правила классификации SDCT не меняем.
+    - Upload с base64: SynGX → SOWA (валидация внешних атак) → СПАП (антивирус).
+      Отказ валидации SOWA — **403**, запрос во внутренний контур не передаётся.
+      Если СПАП не пропустил файл, запрос **не передаётся во внутренний контур**, ответ 422.
+
+    ## Идемпотентность POST
+    - Ключ: заголовок `Idempotency-Key` (UUID), обязателен.
+    - Область уникальности: `X-Client-Org` + `taskId` + `Idempotency-Key`.
+    - Срок хранения ключа: 24 часа.
+    - Повтор с тем же ключом и той же `checksumSha256`: исходный 201 и тот же `attachmentId`,
+      второй объект не создаём.
+    - Повтор с тем же ключом и другим телом / другой суммой: 409 `IDEMPOTENCY_CONFLICT`.
+    - GET ссылки: доступ к тому же файлу повторяем; сам URL каждый раз новый (TTL 15 мин).
+
+    ## Timeout
+    - Таймаут задаёт вызывающая сторона (АС ВСК): 30 с на file-операции.
+    - После истечения клиент **не считает** файл принятым.
+    - Дальше: повтор POST с тем же `Idempotency-Key` либо GET списка задач.
+      Если первый запрос на самом деле прошёл, повтор вернёт исходный 201.
+
+    ## Retry
+    - Повторяем только 503 и обрыв сети.
+    - Не повторяем 400 / 401 / 403 / 404 / 409 / 412 / 413 / 422.
+    - Backoff 2–8 с, максимум 3 попытки, затем инцидент на стороне ВСК.
+
+    ## Версионирование и обратная совместимость
+    - Базовый контракт: `open-api-oktus_2026_08_26.yaml` v1.1.0, путь `/oktus/api/v1`.
+    - 1.2.0 — аддитивное расширение той же мажорной версии: новые операции вложений
+      и необязательное поле `Task.attachments`.
+    - Обратно совместимо: добавить необязательное поле или новый метод; не удалять
+      и не сужать поля v1.1; не менять смысл статусов задачи.
+    - Ломающим было бы: обязательный файл при complete-work, смена path, удаление поля.
+
+    ## Конкуренция
+    - Версия задачи — `lastUpdateTime` из GET /tasks (как в v1.1).
+    - Смена вложений увеличивает `lastUpdateTime`.
+    - Опциональный заголовок `If-Match`: клиент передаёт известный `lastUpdateTime`.
+      Если задача уже изменилась — 412 `PRECONDITION_FAILED`. Без заголовка —
+      «последняя запись побеждает» в списке файлов; CLOSED по-прежнему 409.
+    - Файл Банка (source=PARUS) удалить нельзя — 403, не гонка.
+
+    ## Частичные отказы
+    - Отказ валидации SOWA: 403, во внутренний контур запрос не попал, события нет.
+    - СПАП недоступен: 503, во внутренний контур файл не попал, события ПАРУС нет.
+    - СПАП CLEAN, запись в ФИР не удалась: 503, 201 не отдаём, события нет.
+    - Ссылка истекла: GET объекта в ФИР отклоняется; ВСК снова вызывает
+      GET .../attachments/{id} за новой ссылкой.
+    - Inbound ПАРУС / SDCT недоступен: файл в `attachments[]` не публикуем;
+      потребитель события повторяет, затем карантин. Это не ответ API ВСК.
+
+  contact:
+    name: Климова Олеся
+    email: Klimova.O.Yury@sberbank.ru
+
+servers:
+  - url: https://api.oktus.sber.ru:8800/oktus/api/v1
+    description: Промышленный стенд
+  - url: https://api-psi.oktus.sber.ru:8800/oktus/api/v1
+    description: Тестовый стенд
+
+tags:
+  - name: Attachments
+    description: Вложения задачи
+
+security:
+  - clientCert: []
+
+paths:
+  /tasks/{taskId}/attachments:
+    post:
+      operationId: uploadTaskAttachment
+      tags: [Attachments]
+      summary: Загрузка вложения к задаче
+      description: |
+        ВСК прикладывает файл результата (фото, акт, схема).
+        Проверки: принадлежность задачи организации, статус ≠ CLOSED,
+        расширение из входящего списка, размер.
+        До внутреннего контура SOWA отдаёт содержимое в СПАП.
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatchTaskVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadAttachmentRequest'
+            example:
+              fileName: "photo-atm-installed.jpg"
+              contentType: "image/jpeg"
+              contentBase64: "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA..."
+              checksumSha256: "bb12aa88c0ff0011"
+      responses:
+        '201':
+          description: Файл принят, СПАП вернул CLEAN, объект во внутреннем контуре
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attachment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Задача CLOSED либо конфликт идемпотентности
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          description: Файл или тело запроса превысили лимит
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: СПАП отклонил файл, либо недопустимый формат. Во внутренний контур не передано.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /tasks/{taskId}/attachments/{attachmentId}:
+    get:
+      operationId: downloadTaskAttachment
+      tags: [Attachments]
+      summary: Временная ссылка на скачивание вложения
+      description: |
+        Возвращает метаданные и временную ссылку GET объекта ФИР ОКТУС.
+        Доступны файлы source=PARUS и source=VSK своей организации со scanStatus=CLEAN.
+        Ссылка живёт 15 минут. Содержимое файла в JSON не входит.
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/AttachmentId'
+      responses:
+        '200':
+          description: Метаданные и временная ссылка GET
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttachmentDownload'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Файл ещё не прошёл проверку (PENDING)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteTaskAttachment
+      tags: [Attachments]
+      summary: Удаление своего вложения
+      description: |
+        Только source=VSK, задача не CLOSED, организация совпадает.
+        Файл Банка (source=PARUS) удалить нельзя.
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+        - $ref: '#/components/parameters/AttachmentId'
+        - $ref: '#/components/parameters/IfMatchTaskVersion'
+      responses:
+        '204':
+          description: Удалено
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Задача CLOSED
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Z0-9]+[-]?[A-Z0-9]+[-]?[A-Z0-9]+$'
+        maxLength: 20
+        example: TSK000123456
+    AttachmentId:
+      name: attachmentId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+        example: att-vsk-014
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        UUID загрузки. Область: организация + taskId + ключ. Срок 24 ч.
+        Повтор того же тела — исходный 201. Другое тело — 409.
+      schema:
+        type: string
+        format: uuid
+    IfMatchTaskVersion:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        Ожидаемый lastUpdateTime задачи (optimistic lock).
+        Если задача уже изменилась — 412.
+      schema:
+        type: string
+        format: date-time
+
+  securitySchemes:
+    clientCert:
+      type: apiKey
+      in: header
+      name: X-Client-Org
+      description: |
+        mTLS. Сертификат организации УЦ Банка проверяет SynGX
+        и выставляет X-Client-Org / X-Client-CN.
+        Без принятого сертификата — 401. Чужой объект — 403.
+
+  responses:
+    ValidationError:
+      description: Неверные параметры
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Сертификат не принят на входе SynGX
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionFailed:
+      description: lastUpdateTime в If-Match не совпал с текущим
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AccessDenied:
+      description: |
+        403. Чужой объект (TASK_ACCESS_DENIED / FILE_DELETE_FORBIDDEN)
+        либо отказ валидации SOWA (SOWA_VALIDATION_DENIED).
+        Во втором случае запрос до адаптера не доходит.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Задача или вложение не найдены
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unavailable:
+      description: file-002-manager, S3, SOWA или СПАП недоступны
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    AttachmentSource:
+      type: string
+      enum: [PARUS, VSK]
+    ScanStatus:
+      type: string
+      enum: [PENDING, CLEAN, REJECTED]
+    Attachment:
+      type: object
+      required: [attachmentId, fileName, source, sizeBytes, scanStatus, uploadedAt]
+      properties:
+        attachmentId:
+          type: string
+          example: att-vsk-014
+        fileName:
+          type: string
+          maxLength: 255
+          example: photo-atm-installed.jpg
+        contentType:
+          type: string
+          example: image/jpeg
+        sizeBytes:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        source:
+          $ref: '#/components/schemas/AttachmentSource'
+        scanStatus:
+          $ref: '#/components/schemas/ScanStatus'
+        checksumSha256:
+          type: string
+        uploadedAt:
+          type: string
+          format: date-time
+    AttachmentDownload:
+      allOf:
+        - $ref: '#/components/schemas/Attachment'
+        - type: object
+          required: [downloadUrl, downloadUrlExpiresAt]
+          properties:
+            downloadUrl:
+              type: string
+              format: uri
+              description: Временная ссылка HTTP GET объекта ФИР ОКТУС
+              example: https://oktus-s3.example/objects/att-parus-003?X-Amz-Expires=900
+            downloadUrlExpiresAt:
+              type: string
+              format: date-time
+              description: Срок жизни ссылки, 15 минут от выдачи
+    UploadAttachmentRequest:
+      type: object
+      required: [fileName, contentType, contentBase64]
+      properties:
+        fileName:
+          type: string
+          maxLength: 255
+          pattern: '.+\.(jpg|jpeg|xlsx|doc|pptx|drawio)$'
+        contentType:
+          type: string
+          enum:
+            - image/jpeg
+            - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+            - application/msword
+            - application/vnd.openxmlformats-officedocument.presentationml.presentation
+            - application/vnd.jgraph.mxfile
+            - application/xml
+        contentBase64:
+          type: string
+          format: byte
+        checksumSha256:
+          type: string
+          description: Опциональная контрольная сумма. При расхождении — 400.
+    ErrorResponse:
+      type: object
+      required: [errorCode, message, timestamp]
+      properties:
+        errorCode:
+          type: string
+          enum:
+            - VALIDATION_ERROR
+            - TASK_ACCESS_DENIED
+            - TASK_NOT_FOUND
+            - ATTACHMENT_NOT_FOUND
+            - FILE_DELETE_FORBIDDEN
+            - SOWA_VALIDATION_DENIED
+            - FILE_TOO_LARGE
+            - FILE_TYPE_NOT_ALLOWED
+            - FILE_REJECTED_BY_SCAN
+            - FILE_SCAN_PENDING
+            - TASK_CLOSED
+            - IDEMPOTENCY_CONFLICT
+            - PRECONDITION_FAILED
+            - UNAUTHORIZED
+            - SERVICE_UNAVAILABLE
+        message:
+          type: string
+          maxLength: 500
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
+        timestamp:
+          type: string
+          format: date-time
+
+    TaskAttachmentsExtension:
+      description: |
+        Поле, добавляемое в схему Task v1.1.0.
+        В GET /tasks можно запросить `fields=attachments`.
+        Файлы с вердиктом SDCT = K-2 в массив не входят.
+      type: object
+      properties:
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'

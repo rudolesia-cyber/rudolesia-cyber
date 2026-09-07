@@ -1,0 +1,1032 @@
+openapi: 3.0.1
+info:
+  title: API ФП ПАРУС.ОКТУС
+  version: 1.1.0
+  description: |  
+    # API для интеграции с внешними сервисными организациями
+    ## Общее описание
+    API обеспечивает взаимодействие между ОКТУС и внешними сервисными организациями (ВСК) 
+    для управления задачами по обслуживанию устройств самообслуживания.
+    
+    ## Основные возможности
+    - Получение списка задач
+    - Получение детальной информации о задаче
+    - Начало работ по задаче
+    - Завершение задачи
+    - Частичное обновление атрибутов задачи без изменения статуса
+
+    ## Changelog
+    ### v1.1.0 (2026-08-26)
+    - Добавлен параметр фильтрации `resolutionCode` в `GET /tasks`
+    - Добавлен полный объект задачи (`task`) в ответы POST-эндпоинтов:
+      - `POST /tasks/{taskId}/actions/start-work` — ответы 200, 409
+      - `POST /tasks/{taskId}/actions/complete-work` — ответы 200, 409
+      - `POST /tasks/{taskId}/actions/update` — ответы 200, 409
+    - Уточнение спецификации: поле `fields` в `GET /tasks` переделано из `string` в `array<string>`:
+      - Формат: `?fields=taskId&fields=title` (без запятой)
+      - Добавлен `enum` из 33 допустимых полей задачи
+      - Параметр опциональный — при отсутствии возвращаются все поля
+
+    ### v1.0.2
+    - Предварительная версия спецификации
+
+    ## Сертификаты
+    **ВСК передает в Банк два неподписанных сертификата:**
+    - сертификат стенда в тестовом контуре ВСК
+    - сертификат стенда в промышленном контуре ВСК
+
+    > Сертификаты необходимы для установления mTLS-соединения между АС контрагента и ФП ОКТУС.
+    
+    **Сертификаты должны быть клиентскими и удовлетворять следующим условиям:**
+    - countryName (C) = RU
+    - stateOrProvinceName (ST) = Region
+    - localityName (L) = Location
+    - organizationName (O) = Organization Name (предоставляет Банк)
+    - organizationalUnitName (OU) = CIХХХХХХХХ (предоставляет Банк)
+    - organizationalUnitName (OU) = xxxxxxxxxx (ИНН ЮЛ)
+    - organizationalUnitName (OU) = SberbankClient
+    - organizationalUnitName (OU) = sm
+    - commonName (CN) = CIХХХХХХХХ-PROM/PSI-YYYYYYYYYYY (предоставляет Банк)
+
+    > Порядок атрибутов в сертификате обязателен!
+
+    Формат *.csr.
+    Алгоритм открытого ключа – RSA.
+    Длина открытого ключа должна быть более 2048 бит.
+
+    ## Требования к безопасности
+    ### Аутентификация с использованием взаимного TLS (mTLS)
+    
+    Все запросы к данному API **должны** использовать взаимную аутентификацию TLS (mTLS).
+    
+    **Клиент должен предоставить:**
+    1. Действительный клиентский сертификат, выпущенный Удостоверяющим Центром Банка.
+    2. Сертификат должен содержать корректный CN (Common Name) и быть не просроченным.
+    
+    **Серверная инфраструктура Банка (SynGX):**
+    - Проверяет валидность цепочки сертификатов
+    - Проверяет IP-адрес клиента по белому списку
+    - Добавляет проверенные атрибуты в HTTP-заголовки:
+      - `X-Client-Org` — идентификатор организации ВСК
+      - `X-Client-CN` — CN из клиентского сертификата
+    
+    
+  contact:
+    name: Климова Олеся
+    email: Klimova.O.Yury@sberbank.ru
+    
+servers:
+  - url: https://api.oktus.sber.ru:8800/oktus/api/v1
+    description: Промышленный стенд
+  - url: https://api-psi.oktus.sber.ru:8800/oktus/api/v1
+    description: Тестовый стенд
+    
+tags:
+  - name: Tasks_Info
+    description: Информация о задачах
+  - name: Task_Actions
+    description: Действия над задачами (изменение статусов)
+
+  
+paths:
+
+  /tasks:
+    get:
+      summary: Получение списка открытых задач, назначенных для выполнения в ВСК
+      description: |
+        Получение списка задач с поддержкой пагинации, фильтрации и выбора получаемых полей задачи.
+
+        Запрос выполняется с настроенной периодичностью (например каждые 4 минуты). 
+        Фильтрация по рабочей группе (assignmentGroup) выполняется автоматически по Organization Name сертификата.
+
+              
+        **Пагинация:**
+        - limit в диапазоне [1..100]. Если не указано, то используем значение по умочанию - 100.
+        - offset >= 0
+        
+        **Ошибки:**
+        - 400 VALIDATION_ERROR - неверные параметры запроса
+        - 503 SERVICE_UNAVAILABLE - сервис недоступен
+
+        **Пример запроса:** 
+        ```http
+        GET https://api.oktus.sber.ru:8800/oktus/api/v1/tasks/?openTimeFrom=2026-12-15T07:35:15Z&openTimeTo=2026-12-15T07:36:15Z&fields=taskId&fields=status&limit=100&offset=0
+        Host: api.oktus.sber.ru:8800
+        User-Agent: Oktus-VSK-Integration/1.0.0
+        Accept: application/json, */*
+        Accept-Encoding: gzip, deflate, br
+        Cache-Control: no-cache
+        Connection: keep-alive
+        ```
+
+      operationId: getTasks
+      tags:
+        - Tasks_Info
+      parameters:
+        - $ref: '#/components/parameters/OpenTimeFrom'
+        - $ref: '#/components/parameters/OpenTimeTo'
+        - $ref: '#/components/parameters/LastUpdateTimeFrom'
+        - $ref: '#/components/parameters/LastUpdateTimeTo'
+        - $ref: '#/components/parameters/Status'
+        - $ref: '#/components/parameters/ResolutionCode'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - $ref: '#/components/parameters/Fields'
+      responses:
+        '200':
+          description: Успешный возврат списка задач
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+        '400':
+          description: Неверные параметры запроса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Сервис недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}:
+    get:
+      summary: Получение информации из задачи по ее номеру
+      description: |
+        Получение полной информации о задаче по ее номеру.
+        Выполняется проверка принадлежности задачи организации по organizationName сертификата.
+        
+
+        **Ошибки:**
+        - 403 TASK_ACCESS_DENIED - задача не принадлежит организации
+        - 404 TASK_NOT_FOUND - задача не найдена
+        - 503 SERVICE_UNAVAILABLE - сервис недоступен
+
+        **Пример запроса:** 
+        ```
+        GET https://api.oktus.sber.ru:8800/oktus/api/v1/tasks/TSK000123456
+        Host: api.oktus.sber.ru:8800
+        User-Agent: Oktus-VSK-Integration/1.0.0
+        Accept: application/json, */*
+        Accept-Encoding: gzip, deflate, br
+        Cache-Control: no-cache
+        Connection: keep-alive
+        ```
+
+      operationId: getTaskById
+      tags:
+        - Tasks_Info
+
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Успешный возврат информации о задаче
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '403':
+          description: Доступ к задаче запрещен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Задача не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Сервис недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  
+  /tasks/{taskId}/actions/start-work:
+    post:
+      summary: Начало работы по задаче
+      description: |
+        Перевод задачи из статуса "ASSIGNED" в статус "IN_WORK".
+        
+        **Бизнес-правила:**
+        - Задача должна быть в статусе "ASSIGNED"
+        - Задача должна принадлежать организации (проверка принадлежности задачи по organizationName сертификата)
+        - actualStartTime не может быть в будущем
+        
+        **Ошибки:**
+        - 400 VALIDATION_ERROR - неверные параметры запроса
+        - 403 TASK_ACCESS_DENIED - задача не принадлежит организации
+        - 404 TASK_NOT_FOUND - задача не найдена
+        - 409 TASK_ALREADY_IN_WORK - задача уже в работе
+        - 409 TASK_ALREADY_COMPLETED - задача уже завершена
+        - 409 TASK_STATUS_CONFLICT - конфликт статусов
+        - 503 SERVICE_UNAVAILABLE - сервис недоступен
+
+        **Пример запроса:** 
+        ```http
+        POST https://api.oktus.sber.ru:8800/oktus/api/v1/tasks/TSK000123456/actions/start-work
+        Host: api.oktus.sber.ru:8800
+        User-Agent: Oktus-VSK-Integration/1.0.0
+        Accept: application/json, */*
+        Accept-Encoding: gzip, deflate, br
+        Cache-Control: no-cache
+        Connection: keep-alive
+        Content-Type: application/json; charset=utf-8
+        {
+          "actualStartTime": "2026-01-16T09:15:30Z",
+          "assignee": "Петров П.П."
+        }
+        ```
+
+      operationId: startTaskWork
+      tags:
+        - Task_Actions
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartWorkRequest'
+      responses:
+        '200':
+          description: Статус задачи успешно обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskActionResponse'
+        '400':
+          description: Неверный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Доступ к задаче запрещен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Задача не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Конфликт статусов или бизнес-правил
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskErrorResponse'
+        '503':
+          description: Сервис task-001-crud недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}/actions/complete-work:
+    post:
+      summary: Завершение работы по задаче
+      description: |
+        Перевод задачи из статуса "IN_WORK" в статус "WORK_COMPLETED".
+        
+        **Бизнес-правила:**
+        - Задача должна быть в статусе "IN_WORK"
+        - Задача должна принадлежать организации (проверка принадлежности задачи по organizationName сертификата)
+        - Код закрытия один из ["Решено полностью", "Решено с замечаниями/обходным путём", "Отказ - не согласовано"]
+        - actualFinishTime не может быть в будущем
+        - actualFinishTime не может быть раньше actualStartTime
+        
+        **Ошибки:**
+        - 400 VALIDATION_ERROR - неверные параметры запроса
+        - 403 TASK_ACCESS_DENIED - задача не принадлежит организации
+        - 404 TASK_NOT_FOUND - задача не найдена
+        - 409 TASK_NOT_IN_WORK - задача не в работе
+        - 409 TASK_ALREADY_COMPLETED_OR_CLOSED - задача уже завершена или закрыта
+        - 409 TASK_STATUS_CONFLICT - конфликт статусов
+        - 503 SERVICE_UNAVAILABLE - сервис недоступен
+
+        **Пример запроса:** 
+        ```http
+        POST https://api.oktus.sber.ru:8800/oktus/api/v1/tasks/TSK000123456/actions/complete-work
+        Host: api.oktus.sber.ru:8800
+        User-Agent: Oktus-VSK-Integration/1.0.0
+        Accept: application/json, */*
+        Accept-Encoding: gzip, deflate, br
+        Cache-Control: no-cache
+        Connection: keep-alive
+        Content-Type: application/json; charset=utf-8
+        {
+          "resolutionCode": "Решено полностью",
+          "resolution": "Замена ресайклера выполнена успешно. Устройство протестировано, работает в штатном режиме.",
+          "actualFinishTime": "2026-01-16T17:30:00Z"
+        }
+        ```
+
+      operationId: completeTask
+      tags:
+        - Task_Actions
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteTaskRequest'
+      responses:
+        '200':
+          description: Задача успешно завершена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskActionResponse'
+        '400':
+          description: Неверный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Доступ к задаче запрещен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Задача не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Конфликт статусов или бизнес-правил
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskErrorResponse'
+        '503':
+          description: Сервис task-001-crud недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tasks/{taskId}/actions/update:
+    post:
+      summary: Обновление атрибутов задачи
+      description: |
+        Обновление отдельных атрибутов задачи без изменения статуса.
+        
+        **Бизнес-правила:**
+        - Задача должна принадлежать организации (проверка принадлежности задачи по organizationName сертификата)
+        - Разрешенные поля зависят от статуса задачи
+          - "ASSIGNED": assignee, counterpartTaskUid, resolution
+          - "IN_WORK": actualStartTime, assignee, resolution
+          - "WORK_COMPLETED": actualFinishTime, resolution, resolutionCode (если текущий код задачи не "Решено/отменено пользователем")
+          - "CLOSED": обновления любых полей запрещены
+        
+        **Ошибки:**
+        - 400 VALIDATION_ERROR - неверные параметры запроса
+        - 403 TASK_ACCESS_DENIED - задача не принадлежит организации
+        - 404 TASK_NOT_FOUND - задача не найдена
+        - 409 BUSINESS_RULE_VIOLATION - нарушение бизнес-правил
+        - 409 TASK_STATUS_CONFLICT - конфликт статусов
+        - 409 TASK_ALREADY_COMPLETED_OR_CLOSED - задача уже завершена или закрыта
+        - 503 SERVICE_UNAVAILABLE - сервис недоступен
+
+        **Пример запроса:** 
+        ```http
+        POST https://api.oktus.sber.ru:8800/oktus/api/v1/tasks/TSK000123456/actions/update
+        Host: api.oktus.sber.ru:8800
+        User-Agent: Oktus-VSK-Integration/1.0.0
+        Accept: application/json, */*
+        Accept-Encoding: gzip, deflate, br
+        Cache-Control: no-cache
+        Connection: keep-alive
+        Content-Type: application/json; charset=utf-8
+        {
+          "counterpartTaskUid": "SBL-0000048585"
+        }
+        ```
+      operationId: updateTask
+      tags:
+        - Task_Actions
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+      responses:
+        '200':
+          description: Атрибуты задачи успешно обновлены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskActionResponse'
+        '400':
+          description: Неверный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Доступ к задаче запрещен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Задача не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Конфликт статусов или бизнес-правил
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskErrorResponse'
+        '503':
+          description: Сервис task-001-crud недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+
+components:
+  parameters:
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Идентификатор задачи
+      schema:
+        type: string
+        pattern: '^[A-Z0-9]+[-]?[A-Z0-9]+[-]?[A-Z0-9]+$'
+        example: "TSK000123456"
+        maxLength: 20
+    
+    OpenTimeFrom:
+      name: openTimeFrom
+      in: query
+      description: Фильтр по дате создания (от)
+      schema:
+        type: string
+        format: date-time
+        example: "2026-01-01T00:00:00Z"
+    
+    OpenTimeTo:
+      name: openTimeTo
+      in: query
+      description: Фильтр по дате создания (до)
+      schema:
+        type: string
+        format: date-time
+        example: "2026-01-01T00:03:59Z"
+    
+    LastUpdateTimeFrom:
+      name: lastUpdateTimeFrom
+      in: query
+      description: Фильтр по дате последнего обновления (от)
+      schema:
+        type: string
+        format: date-time
+        example: "2026-01-15T00:00:00Z"
+    
+    LastUpdateTimeTo:
+      name: lastUpdateTimeTo
+      in: query
+      description: Фильтр по дате последнего обновления (до)
+      schema:
+        type: string
+        format: date-time
+        example: "2026-01-15T00:03:59Z"
+    
+    Status:
+      name: status
+      in: query
+      description: Фильтр по статусу задачи 
+      schema:
+        $ref: '#/components/schemas/TaskStatus'
+    
+    ResolutionCode:
+      name: resolutionCode
+      in: query
+      description: Фильтр по коду закрытия задачи
+      schema:
+        $ref: '#/components/schemas/ResolutionCode'
+        example: "Решено полностью"
+    
+    Limit:
+      name: limit
+      in: query
+      description: Количество возвращаемых записей в ответе (максимум 100)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 100
+        example: 50
+    
+    Offset:
+      name: offset
+      in: query
+      description: Смещение для пагинации
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+        example: 0
+    
+    Fields:
+      name: fields
+      in: query
+      description: >
+        Список возвращаемых полей задачи. 
+        Если не задано, возвращаются все заполненные поля. 
+        Если указано только taskId, возвращается список идентификаторов задач.
+      required: false
+      schema:
+        type: array
+        items:
+          type: string
+          enum:
+            - taskId
+            - counterpartTaskUid
+            - title
+            - workTypeName
+            - sourceSystem
+            - status
+            - description
+            - assignmentGroup
+            - assignee
+            - resolutionCode
+            - resolution
+            - returnCount
+            - tb
+            - gosb
+            - address
+            - placeName
+            - latitude
+            - longitude
+            - timezoneOffset
+            - deviceUid
+            - deviceModel
+            - deviceType
+            - deviceSerialNumber
+            - serviceTime
+            - serviceTimeFLM
+            - serviceTimeSLM
+            - plannedEndTime
+            - breachTime
+            - openTime
+            - completeTime
+            - lastUpdateTime
+            - actualStartTime
+            - actualFinishTime
+        style: form
+        explode: true
+        example: ["taskId", "counterpartTaskUid"]
+
+
+  schemas:
+    
+    ErrorResponse:
+      type: object
+      description: Стандартный формат ошибки
+      required:
+        - errorCode
+        - message
+        - timestamp
+      properties:
+        errorCode:
+          type: string
+          description: Код ошибки
+          enum: [
+            VALIDATION_ERROR,
+            SERVICE_UNAVAILABLE,
+            TASK_ACCESS_DENIED,
+            TASK_NOT_FOUND,
+            TASK_ALREADY_IN_WORK,
+            TASK_ALREADY_COMPLETED,
+            TASK_ALREADY_COMPLETED_OR_CLOSED,
+            TASK_STATUS_CONFLICT,
+            TASK_NOT_IN_WORK,
+            EXTERNAL_ID_MISMATCH,
+            BUSINESS_RULE_VIOLATION,
+            EMPTY_UPDATE_REQUEST,
+            INTERNAL_SERVER_ERROR
+          ]
+          example: "VALIDATION_ERROR"
+          maxLength: 50
+        message:
+          type: string
+          description: Описание ошибки
+          example: "Неверные параметры запроса"
+          maxLength: 500
+        details:
+          type: array
+          description: Детальная информация об ошибках
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                description: Поле с ошибкой
+              message:
+                type: string
+                description: Описание ошибки поля
+        timestamp:
+          type: string
+          format: date-time
+          description: Время возникновения ошибки
+          example: "2024-01-15T10:30:00Z"
+
+    ResolutionCode:
+      type: string
+      description: Код закрытия задачи
+      enum:
+        - "Решено полностью"
+        - "Решено с замечаниями/обходным путём"
+        - "Решено/отменено пользователем"
+        - "Отказ - не согласовано"
+      example: "Решено полностью"
+
+    TaskErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            task:
+              $ref: '#/components/schemas/Task'
+
+
+    TaskListResponse:
+      type: object
+      description: Ответ со списком задач
+      required:
+        - tasks
+        - pagination
+      properties:
+        tasks:
+          type: array
+          description: Список задач
+          items:
+            $ref: '#/components/schemas/Task'
+        pagination:
+          $ref: '#/components/schemas/PaginationInfo'
+
+    PaginationInfo:
+      type: object
+      description: Информация о пагинации
+      required:
+        - total
+        - limit
+        - offset
+        - hasMore
+      properties:
+        total:
+          type: integer
+          description: Общее количество записей
+          minimum: 0
+          example: 150
+        limit:
+          type: integer
+          description: Количество записей на странице
+          minimum: 1
+          maximum: 100
+          example: 50
+        offset:
+          type: integer
+          description: Смещение
+          minimum: 0
+          example: 0
+        hasMore:
+          type: boolean
+          description: Признак наличия следующих страниц
+          example: true
+
+    TaskStatus:
+      type: string
+      description: Статус задачи
+      enum: ["ASSIGNED", "IN_WORK", "WORK_COMPLETED", "CLOSED"]
+      example: "ASSIGNED"
+
+    Task:
+      type: object
+      description: Модель задачи
+      required:
+        - taskId
+        - status
+        - assignmentGroup
+        - openTime
+      properties:
+        taskId:
+          type: string
+          description: Уникальный идентификатор задачи в АС Банка
+          pattern: '^[A-Z0-9]+[-]?[A-Z0-9]+[-]?[A-Z0-9]+$'
+          maxLength: 20
+          example: "TSK000123456"
+        counterpartTaskUid:
+          type: string
+          description: Внешний идентификатор (номер заявки в АС ВСК)
+          maxLength: 100
+          example: "SBL-0000048585"
+        title:
+          type: string
+          description: Тема задачи
+          maxLength: 255
+          example: "Транспортировка, такелаж, монтаж-демонтаж УС"
+        workTypeName:
+          type: string
+          description: Вид работы
+          maxLength: 1000
+          example: "Первичная диагностика состояния устройства"
+        sourceSystem:
+          type: string
+          description: АС - инициатор заявки
+          maxLength: 36
+          enum: ["PARUS", "Atm.Host"]
+          example: "Atm.Host"
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        description:
+          type: string
+          description: Подробное описание задачи
+          maxLength: 5000
+          example: "Заявка по инциденту:Рециркулятор 2025:05:11 09:48:05 |
+                    Необходим ремонт ресайклера, на загруженном УС. Более 2-х сбоев за последние 5 дней по повторяющейся ошибке."
+        assignmentGroup:
+          type: string
+          description: Рабочая группа исполнителя
+          maxLength: 100
+          example: "OOO Sberbank-Service"
+        assignee:
+          type: string
+          description: Исполнитель (сотрудник РГ)
+          maxLength: 100
+          example: "Иванов И.И."
+        resolutionCode:
+          $ref: '#/components/schemas/ResolutionCode'
+        resolution:
+          type: string
+          description: Решение
+          maxLength: 5000
+          example: "Работы выполнены в полном объеме"
+        returnCount:
+          type: integer
+          description: Счетчик возвратов задачи
+          minimum: 0
+          example: 0
+        tb:
+          type: string
+          description: ТБ места установки
+          maxLength: 100
+          example: "099"
+        gosb:
+          type: string
+          description: ГОСБ места установки
+          maxLength: 100
+          example: "8956"
+        address:
+          type: string
+          description: Адрес места установки/работ
+          maxLength: 1000
+          example: "115516, г Москва, пр-кт Пролетарский, д.30"
+        placeName:
+          type: string
+          description: Название места
+          maxLength: 500
+          example: "Гипермаркет Ашан"
+        latitude:
+          type: number
+          description: Широта объекта
+          format: double
+          example: 55.123456
+        longitude:
+          type: number
+          description: Долгота объекта
+          format: double
+          example: 37.654321
+        timezoneOffset:
+          type: integer
+          description: Временная зона относительно UTC:0 в часах
+          example: 3
+        deviceUid:
+          type: string
+          description: Уникальный идентификатор УС
+          maxLength: 100
+          example: "60035571"
+        deviceModel:
+          type: string
+          description: Модель УС
+          maxLength: 50
+          example: "Nautilus MX8600SB TMa"
+        deviceType:
+          type: string
+          description: Тип УС
+          maxLength: 36
+          enum: ["Банкомат", "ИПТ", "АДМ", "TCR", "ССМ", "Постамат", "Диспенсер талонов СУО", "Неттоп и ЖК панель"]
+          example: "Банкомат"
+        deviceSerialNumber:
+          type: string
+          description: Серийный номер УС
+          maxLength: 100
+          example: "YM34201631"
+        serviceTime:
+          type: array
+          description: Клиентское окно доступа (JSON)
+          items:
+            $ref: '#/components/schemas/TimeSlot'
+        serviceTimeFLM:
+          type: array
+          description: Сервисное окно FLM (JSON)
+          items:
+            $ref: '#/components/schemas/TimeSlot'
+        serviceTimeSLM:
+          type: array
+          description: Сервисное окно SLM (JSON)
+          items:
+            $ref: '#/components/schemas/TimeSlot'
+        plannedEndTime:
+          type: string
+          format: date-time
+          description: Плановое время проведения работ
+          example: "2024-01-20T18:00:00Z"
+        breachTime:
+          type: string
+          format: date-time
+          description: Контрольный срок выполнения
+          example: "2024-01-25T23:59:59Z"
+        openTime:
+          type: string
+          format: date-time
+          description: Дата и время создания задачи
+          example: "2024-01-15T08:00:00Z"
+        completeTime:
+          type: string
+          format: date-time
+          description: Дата и время выполнения задачи
+          example: "2024-01-25T17:00:00Z"
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: Время последнего обновления
+          example: "2024-01-15T10:30:00Z"
+        actualStartTime:
+          type: string
+          format: date-time
+          description: Фактическое время начала работ
+          example: "2024-01-16T09:00:00Z"
+        actualFinishTime:
+          type: string
+          format: date-time
+          description: Фактическое время окончания работ
+          example: "2024-01-16T17:00:00Z"
+
+    TimeSlot:
+      type: object
+      description: Временной интервал для расписания
+      required:
+        - day_of_week
+        - start_time
+        - end_time
+      properties:
+        day_of_week:
+          type: integer
+          description: День недели (1-7)
+          minimum: 1
+          maximum: 7
+          example: 1
+        start_time:
+          type: string
+          description: Время начала
+          pattern: '^([0-1][0-9]|2[0-3]):[0-5][0-9]$'
+          example: "09:00"
+        end_time:
+          type: string
+          description: Время окончания
+          pattern: '^([0-1][0-9]|2[0-3]):[0-5][0-9]$'
+          example: "18:00"
+
+    StartWorkRequest:
+      type: object
+      description: Запрос на начало работы по задаче
+      required:
+        - actualStartTime
+      properties:
+        actualStartTime:
+          type: string
+          format: date-time
+          description: Фактическое время начала работ (не в будущем)
+          example: "2024-01-16T09:00:00Z"
+        assignee:
+          type: string
+          description: Исполнитель (сотрудник РГ)
+          maxLength: 100
+          example: "Иванов И.И."
+        counterpartTaskUid:
+          type: string
+          description: Внешний идентификатор (номер заявки в АС ВСК)
+          maxLength: 100
+          example: "SBL-0000048585"
+
+    CompleteTaskRequest:
+      type: object
+      description: Запрос на завершение задачи
+      required:
+        - resolutionCode
+        - resolution
+        - actualFinishTime
+      properties:
+        resolutionCode:
+          $ref: '#/components/schemas/ResolutionCode'
+        resolution:
+          type: string
+          description: Описание выполненных работ
+          maxLength: 5000
+          example: "Все работы выполнены согласно техническому заданию"
+        actualFinishTime:
+          type: string
+          format: date-time
+          description: Фактическое время окончания работ (не в будущем, не раньше actualStartTime)
+          example: "2024-01-16T17:00:00Z"
+        counterpartTaskUid:
+          type: string
+          description: Внешний идентификатор (номер заявки в АС ВСК)
+          maxLength: 100
+          example: "SBL-0000048585"
+
+    UpdateTaskRequest:
+      type: object
+      description: Запрос на обновление атрибутов задачи
+      properties:
+        assignee:
+          type: string
+          description: Исполнитель (сотрудник РГ)
+          maxLength: 100
+          example: "Петров П.П."
+        resolutionCode:
+          $ref: '#/components/schemas/ResolutionCode'
+        resolution:
+          type: string
+          description: Описание выполненных работ
+          maxLength: 5000
+          example: "Частичное выполнение работ"
+        counterpartTaskUid:
+          type: string
+          description: Внешний идентификатор
+          maxLength: 100
+          example: "VVB-1469090"
+        actualFinishTime:
+          type: string
+          format: date-time
+          description: Фактическое время окончания работ
+          example: "2024-01-16T09:00:00Z"
+
+
+    TaskActionResponse:
+      type: object
+      description: Ответ на действие с задачей с полным объектом задачи
+      required:
+        - success
+        - message
+        - timestamp
+        - task
+      properties:
+        success:
+          type: boolean
+          description: Статус выполнения операции
+          example: true
+        message:
+          type: string
+          description: Сообщение о результате операции
+          maxLength: 500
+          example: "Задача успешно обновлена"
+        taskId:
+          type: string
+          maxLength: 20
+          description: Идентификатор задачи
+          example: "TSK000123456"
+        timestamp:
+          type: string
+          format: date-time
+          description: Время выполнения операции
+          example: "2024-01-15T10:30:00Z"
+        task:
+          $ref: '#/components/schemas/Task'

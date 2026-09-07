@@ -1,0 +1,283 @@
+asyncapi: 2.6.0
+info:
+  title: ОКТУС — события вложений заявок
+  version: 1.2.0
+  description: |
+    Два внутренних **события-факта** контура ПАРУС ↔ ОКТУС (не команды).
+    Потребитель сам решает, что делать. Бинарники в Kafka не едут —
+    только метаданные и ссылка на объект ФИР.
+
+    К АС ВСК события не публикуем. Внешний канал остаётся синхронным poll
+    (BR-01): иначе банку нужен вход в сеть компании.
+
+    Обязательные поля каждого события: eventName, eventId, schemaVersion,
+    occurredAt, correlationId, producer.
+
+    Идемпотентность потребителя: ключ = eventId. Повтор того же eventId
+    не создаёт второй файл и не двигает lastUpdateTime повторно.
+
+    Порядок версий объекта: lastUpdateTime задачи. Событие старше
+    уже сохранённой версии отбрасываем (не откатываем состав файлов).
+
+    Гарантированная обработка (at-least-once):
+    - ack брокеру — только после записи нужного состояния
+      (метаданные + объект ФИР или решение «K-2 не публикуем»);
+    - повтор: временные ошибки (ФИР / SDCT / БД недоступны);
+      бизнес-отказ (K-2, битая ссылка) в карантин без бесконечного retry;
+    - карантин (DLQ): oktus_integr status=FAILED, reason, payload, попытки;
+    - сверка (reconciliation): выборка attachmentId / eventId за окно,
+      сравнение ФИР и карточки файла;
+    - метрики: лаг топика, возраст необработанного, число повторов,
+      размер карантина.
+
+    Соответствие архитектуре:
+    - входящий топик: PARUS-CI00448138.COMMONTASKCHANGEDUPDATE
+    - исходящий топик: PARUS.IN.EXTERNALIMPLEMENTATIONTASK
+    - обработчики: integr-task-002-event-handler-inbound,
+                   integr-task-003-event-handler-outbound
+
+defaultContentType: application/json
+
+channels:
+  PARUS-CI00448138.COMMONTASKCHANGEDUPDATE:
+    description: |
+      Событие-факт. ПАРУС уже изменил заявку или состав файлов.
+      ОКТУС не «выполняет команду», а подтягивает своё состояние.
+    subscribe:
+      operationId: consumeTaskChanged
+      summary: ОКТУС читает факт и при ADDED забирает файл GET по ссылке ФИР ПАРУС
+      message:
+        $ref: '#/components/messages/TaskChangedEvent'
+
+  PARUS.IN.EXTERNALIMPLEMENTATIONTASK:
+    description: |
+      Событие-факт. Файл ВСК уже принят во внутреннем контуре после СПАП CLEAN.
+      ПАРУС забирает бинарник по ссылке, ОКТУС его не «приказывает» закрыть заявку.
+    publish:
+      operationId: publishAttachmentReady
+      summary: ПАРУС читает факт и забирает файл GET по ссылке ФИР ОКТУС
+      message:
+        $ref: '#/components/messages/AttachmentReadyEvent'
+
+components:
+  messages:
+    TaskChangedEvent:
+      name: TaskChangedEvent
+      title: Изменение задачи / вложений со стороны ПАРУС
+      description: |
+        eventName: TaskChangedEvent.
+        Producer: ПАРУС. Consumer: ОКТУС (integr-task-002 inbound).
+        Trigger: пользователь приложил или снял файл, сменился статус,
+        задачу вернули в работу.
+        Смысл: заявка Банка изменилась; если есть ADDED — ОКТУС забирает
+        файл из ФИР ПАРУС и проверяет K-2.
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/EventHeaders'
+      payload:
+        $ref: '#/components/schemas/TaskChangedPayload'
+      examples:
+        - name: fileAddedByParus
+          summary: Пользователь ПАРУС приложил планировочное решение
+          payload:
+            eventId: "8c1a0c2e-2b1a-4d3e-9f11-0a0b0c0d0e0f"
+            eventName: TaskChangedEvent
+            schemaVersion: "1.2.0"
+            occurredAt: "2026-09-06T10:15:30Z"
+            correlationId: "TSK000123456-20260906T101530Z"
+            producer: PARUS
+            taskId: "TSK000123456"
+            lastUpdateTime: "2026-09-06T10:15:30Z"
+            changeType: ATTACHMENTS_CHANGED
+            attachments:
+              - attachmentId: "att-parus-001"
+                fileName: "plan-floor-3.pdf"
+                contentType: "application/pdf"
+                sizeBytes: 2457600
+                source: PARUS
+                action: ADDED
+                downloadUrl: "https://parus-s3.internal/objects/plan-floor-3.pdf"
+                checksumSha256: "a3f5c1..."
+
+    AttachmentReadyEvent:
+      name: AttachmentReadyEvent
+      title: Файл ВСК прошёл СПАП и доступен ПАРУСу
+      description: |
+        eventName: AttachmentReadyEvent.
+        Producer: ОКТУС. Consumer: ПАРУС.
+        Trigger: POST вложения ВСК принят, СПАП = CLEAN, объект в ФИР ОКТУС.
+        Смысл: фотоотчёт / акт можно забрать в заявку Банка.
+        Не публикуем, если загрузка получила 4xx/503 — частичного «почти готово» нет.
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/EventHeaders'
+      payload:
+        $ref: '#/components/schemas/AttachmentReadyPayload'
+      examples:
+        - name: photoReportReady
+          payload:
+            eventId: "1b2c3d4e-5f60-4789-a012-3456789abcde"
+            eventName: AttachmentReadyEvent
+            schemaVersion: "1.2.0"
+            occurredAt: "2026-09-06T14:22:10Z"
+            correlationId: "TSK000123456-20260906T101530Z"
+            producer: OKTUS
+            taskId: "TSK000123456"
+            attachmentId: "att-vsk-014"
+            fileName: "photo-atm-installed.jpg"
+            contentType: "image/jpeg"
+            sizeBytes: 1843200
+            source: VSK
+            scanStatus: CLEAN
+            downloadUrl: "https://oktus-s3.internal/objects/att-vsk-014"
+            lastUpdateTime: "2026-09-06T14:22:10Z"
+            checksumSha256: "bb12aa..."
+
+  schemas:
+    EventHeaders:
+      type: object
+      required: [eventId, schemaVersion, correlationId]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Идемпотентный ключ события (дедупликация потребителя)
+        schemaVersion:
+          type: string
+          example: "1.2.0"
+        correlationId:
+          type: string
+          description: Сквозной идентификатор цепочки задача → файл → API-запрос
+
+    TaskChangedPayload:
+      type: object
+      required:
+        - eventId
+        - eventName
+        - schemaVersion
+        - occurredAt
+        - correlationId
+        - producer
+        - taskId
+        - changeType
+        - lastUpdateTime
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        eventName:
+          type: string
+          const: TaskChangedEvent
+        schemaVersion:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+        producer:
+          type: string
+          const: PARUS
+        taskId:
+          type: string
+          maxLength: 20
+        changeType:
+          type: string
+          enum: [CREATED, UPDATED, STATUS_CHANGED, ATTACHMENTS_CHANGED, RETURNED_TO_WORK]
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: Версия задачи. Событие старше сохранённой версии отбрасываем.
+        status:
+          type: string
+          enum: [ASSIGNED, IN_WORK, WORK_COMPLETED, CLOSED]
+        returnCount:
+          type: integer
+          minimum: 0
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/AttachmentRef'
+
+    AttachmentReadyPayload:
+      type: object
+      required:
+        - eventId
+        - eventName
+        - schemaVersion
+        - occurredAt
+        - correlationId
+        - producer
+        - taskId
+        - attachmentId
+        - fileName
+        - source
+        - scanStatus
+        - downloadUrl
+        - lastUpdateTime
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        eventName:
+          type: string
+          const: AttachmentReadyEvent
+        schemaVersion:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+        producer:
+          type: string
+          const: OKTUS
+        taskId:
+          type: string
+        attachmentId:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        sizeBytes:
+          type: integer
+        source:
+          type: string
+          const: VSK
+        scanStatus:
+          type: string
+          enum: [CLEAN]
+        downloadUrl:
+          type: string
+          format: uri
+        lastUpdateTime:
+          type: string
+          format: date-time
+          description: Версия задачи после приёма файла ВСК
+        checksumSha256:
+          type: string
+
+    AttachmentRef:
+      type: object
+      required: [fileName, source, action, downloadUrl]
+      properties:
+        attachmentId:
+          type: string
+        fileName:
+          type: string
+        contentType:
+          type: string
+        sizeBytes:
+          type: integer
+        source:
+          type: string
+          enum: [PARUS]
+        action:
+          type: string
+          enum: [ADDED, REMOVED, REPLACED]
+        downloadUrl:
+          type: string
+          format: uri
+        checksumSha256:
+          type: string

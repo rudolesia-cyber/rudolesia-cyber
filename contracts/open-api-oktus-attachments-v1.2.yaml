@@ -54,7 +54,7 @@ info:
 
     ## Retry
     - Повторяем только 503 и обрыв сети.
-    - Не повторяем 400 / 401 / 403 / 404 / 409 / 412 / 413 / 422.
+    - Не повторяем 400 / 401 / 403 / 404 / 409 / 413 / 422.
     - Backoff 2–8 с, максимум 3 попытки, затем инцидент на стороне ВСК.
 
     ## Версионирование и обратная совместимость
@@ -66,12 +66,10 @@ info:
     - Ломающим было бы: обязательный файл при complete-work, смена path, удаление поля.
 
     ## Конкуренция
-    - Версия задачи — `lastUpdateTime` из GET /tasks (как в v1.1).
-    - Смена вложений увеличивает `lastUpdateTime`.
-    - Опциональный заголовок `If-Match`: клиент передаёт известный `lastUpdateTime`.
-      Если задача уже изменилась — 412 `PRECONDITION_FAILED`. Без заголовка —
-      «последняя запись побеждает» в списке файлов; CLOSED по-прежнему 409.
-    - Файл Банка (source=PARUS) удалить нельзя — 403, не гонка.
+    - Версия задачи — `lastUpdateTime` из GET /tasks, как в v1.1.
+    - Смена вложений увеличивает `lastUpdateTime`. Клиент видит это на следующем опросе.
+    - Отдельный optimistic lock не вводим: сопровождение и потребители v1.1 его не ждут.
+    - CLOSED → 409. Файл Банка (source=PARUS) удалить нельзя — 403.
 
     ## Частичные отказы
     - Отказ валидации SOWA: 403, во внутренний контур запрос не попал, события нет.
@@ -113,7 +111,6 @@ paths:
       parameters:
         - $ref: '#/components/parameters/TaskId'
         - $ref: '#/components/parameters/IdempotencyKey'
-        - $ref: '#/components/parameters/IfMatchTaskVersion'
       requestBody:
         required: true
         content:
@@ -146,8 +143,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '412':
-          $ref: '#/components/responses/PreconditionFailed'
         '413':
           description: Файл или тело запроса превысили лимит
           content:
@@ -208,7 +203,6 @@ paths:
       parameters:
         - $ref: '#/components/parameters/TaskId'
         - $ref: '#/components/parameters/AttachmentId'
-        - $ref: '#/components/parameters/IfMatchTaskVersion'
       responses:
         '204':
           description: Удалено
@@ -226,8 +220,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '412':
-          $ref: '#/components/responses/PreconditionFailed'
         '503':
           $ref: '#/components/responses/Unavailable'
 
@@ -260,16 +252,6 @@ components:
       schema:
         type: string
         format: uuid
-    IfMatchTaskVersion:
-      name: If-Match
-      in: header
-      required: false
-      description: |
-        Ожидаемый lastUpdateTime задачи (optimistic lock).
-        Если задача уже изменилась — 412.
-      schema:
-        type: string
-        format: date-time
 
   securitySchemes:
     clientCert:
@@ -290,12 +272,6 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     Unauthorized:
       description: Сертификат не принят на входе SynGX
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-    PreconditionFailed:
-      description: lastUpdateTime в If-Match не совпал с текущим
       content:
         application/json:
           schema:
@@ -413,7 +389,6 @@ components:
             - FILE_SCAN_PENDING
             - TASK_CLOSED
             - IDEMPOTENCY_CONFLICT
-            - PRECONDITION_FAILED
             - UNAUTHORIZED
             - SERVICE_UNAVAILABLE
         message:
